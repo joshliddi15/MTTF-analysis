@@ -1,0 +1,165 @@
+import random
+import pandas as pd
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plot
+import numpy as np
+from scipy.stats import ttest_1samp
+
+# Generate pretend sales records
+def generate_sales_records(num_records):
+    sales_records = []
+    for _ in range(num_records):
+        manufacture_date = datetime(random.randint(2015, 2023), random.randint(1, 12), random.randint(1, 28))
+        sale_date = manufacture_date + timedelta(days=random.randint(1, 90))
+        customer_id = random.randint(1000, 9999)
+        sales_records.append({
+            'Manufacture Date': manufacture_date,
+            'Sale Date': sale_date,
+            'Customer ID': customer_id
+        })
+    return sales_records
+
+def generate_return_records(sales_records):
+    return_records = []
+    problem_month = datetime(random.randint(2015, 2021), random.randint(1, 12), 1)
+
+    print(problem_month)
+    for sale in sales_records:
+        
+        # Generate a return date within 365 days of the sale
+        return_date = sale['Sale Date'] + timedelta(days=random.randint(1, 365))
+        
+        # Simulate a "hotspot" period where the return rate is increased since most returns occur within a certain range after purchase
+        hotspot_start = sale['Sale Date'] + timedelta(days=90)
+        hotspot_end = sale['Sale Date'] + timedelta(days=180)
+        
+        # If the return manufacture date is in the problem month, much higher probability of return
+        if 0 < (sale['Manufacture Date']-problem_month).days < random.randint(30, 90):
+              if random.random() < random.randrange(7, 20)/100:
+                return_records.append({
+                    'Manufacture Date': sale['Manufacture Date'],
+                    'Return Date': return_date,
+                    'Customer ID': sale['Customer ID']
+                })
+        # Check if the return date is within the warranty period and within the hotspot for returns
+        elif hotspot_start <= return_date <= hotspot_end:
+            if random.random() < random.randrange(20, 30)/100:  # Increased return probability during the hotspot
+                return_records.append({
+                    'Manufacture Date': sale['Manufacture Date'],
+                    'Return Date': return_date,
+                    'Customer ID': sale['Customer ID']
+                })
+        else:
+            # Calculate the probability of return outside the hotspot
+            if random.random() < (return_date - sale['Sale Date']).days / 365 * random.randrange(20, 25)/100:
+                return_records.append({
+                    'Manufacture Date': sale['Manufacture Date'],
+                    'Return Date': return_date,
+                    'Customer ID': sale['Customer ID']
+                })
+    return return_records
+
+# Generate a bunch of sales records
+sales_data = generate_sales_records(100000)
+
+# Create DataFrames for sales and return records
+sales_df = pd.DataFrame(sales_data)
+returns_df = pd.DataFrame(generate_return_records(sales_data))
+
+# Convert columns to datetime if they are not already
+returns_df['Manufacture Date'] = pd.to_datetime(returns_df['Manufacture Date'])
+returns_df['Return Date'] = pd.to_datetime(returns_df['Return Date'])
+
+returns_df_percent = returns_df.copy()
+sales_df_percent = sales_df.copy()
+
+# Calculate percentage of sales returned per week
+def calculate_return_percentage(returns, sales):
+    returns['Returned'] = 1
+    sales['Total Sales'] = 1
+
+    # Set 'Return Date' as the index for resampling
+    returns.set_index('Manufacture Date', inplace=True)
+    sales.set_index('Manufacture Date', inplace=True)
+
+    # Resample by week and count the occurrences of a specific column (in this case, 'Returned')
+    returns_by_week = returns['Returned'].resample('M').sum()
+    sales_by_week = sales.resample('M').count()
+
+    combined = pd.concat([returns_by_week, sales_by_week], axis=1).fillna(0)
+    combined['Percentage Returned'] = (combined['Returned'] / combined['Total Sales']) * 100
+
+    print(combined.sort_values('Percentage Returned'))
+
+    return combined
+
+# Calculate return percentage
+return_percentage = calculate_return_percentage(returns_df_percent, sales_df_percent)
+
+# Calculate population statistics for return percentages
+average_percentage = return_percentage['Percentage Returned'].mean()
+std_dev = return_percentage['Percentage Returned'].std()
+highest_percentage = return_percentage['Percentage Returned'].max()
+
+# Perform a one-sample t-test of the max against the population to check significance
+# Null hypothesis: Highest return percentage is not significantly different from the population mean
+# Alternative hypothesis: Highest return percentage is significantly different from the population mean
+population_mean = average_percentage
+t_stat, p_value = ttest_1samp(return_percentage['Percentage Returned'], highest_percentage)
+
+# Define significance level
+alpha = 0.01
+
+# Check for significance
+significance = "The highest return percentage is significantly different from the population.\nThere was likely a problem that month" if p_value < alpha else "No significant difference found.\n There are no obvious problem months"
+
+# Plot graph
+plot.figure(figsize=(14, 8))
+plot.subplots_adjust(top=0.85)
+plot.plot(return_percentage.index, return_percentage['Percentage Returned'], marker='o')
+plot.xlabel('Month')
+plot.ylabel('Percent of Sales Returned')
+plot.title('Percentage of Sales Returned by Month Built')
+plot.grid(True)
+
+# Text block with statistics
+text_block = f'''{significance}
+Average return percentage: {average_percentage:.2f}%
+Standard deviation: {std_dev:.2f}%
+Highest return percentage: {highest_percentage:.2f}%
+T-statistic: {t_stat:.2f}
+P-value: {p_value:.5f}'''
+
+# Add the text block to the plot
+plot.text(-.05, 1.15, text_block, transform=plot.gca().transAxes, fontsize=8, verticalalignment='top')
+
+plot.show()
+
+# Calculate MTTF for each manufacturing date
+def calculate_mttf(returns):
+    returns['MTTF'] = (returns['Return Date'] - returns['Manufacture Date']).dt.days
+    mttf_by_date = returns.groupby('Manufacture Date')['MTTF'].mean().reset_index()
+    return mttf_by_date
+
+mttf_analysis = calculate_mttf(returns_df)
+
+# Calculate MTTF for each manufacturing date and group by week
+def calculate_mttf_by_month(returns):
+    returns['MTTF'] = (returns['Return Date'] - returns['Manufacture Date']).dt.days
+    returns.set_index('Manufacture Date', inplace=True)
+    mttf_by_month = returns.resample('M').count()
+    return mttf_by_month
+
+# Calculate MTTF by week
+mttf_by_month = calculate_mttf_by_month(returns_df)
+
+# Plot histogram
+plot.figure(figsize=(10, 6))
+plot.bar(mttf_by_month.index, mttf_by_month['MTTF'], width=5)
+plot.xlabel('Manufacture Date (Grouped by Week)')
+plot.ylabel('Quantity of Returns')
+plot.title('Quantity of Returns based on Manufacture Date (Grouped by Week)')
+plot.show()
+
+# Output potential issues by looking at MTTF for different manufacturing dates
+mttf_analysis = mttf_analysis.sort_values('MTTF')
